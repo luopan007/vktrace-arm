@@ -38,7 +38,8 @@ enum VKTRACE_REPLAY_RESULT {
     VKTRACE_REPLAY_BAD_RETURN,       // replay return value != trace return value
     VKTRACE_REPLAY_CALL_ERROR,       // replaying call caused an error
     VKTRACE_REPLAY_INVALID_PARAMS,   // trace file parameters are invalid
-    VKTRACE_REPLAY_VALIDATION_ERROR  // callback Msg error from validation layer
+    VKTRACE_REPLAY_VALIDATION_ERROR, // callback Msg error from validation layer
+    VKTRACE_REPLAY_DECOMPRESS_ERROR
 };
 
 enum VKTRACE_DBG_MSG_TYPE { VKTRACE_DBG_MSG_INFO = 0, VKTRACE_DBG_MSG_WARNING, VKTRACE_DBG_MSG_ERROR };
@@ -68,6 +69,7 @@ typedef int(VKTRACER_CDECL *funcptr_vkreplayer_getframenumber)();
 typedef void(VKTRACER_CDECL *funcptr_vkreplayer_resetframenumber)(int frameNumber);
 typedef int(VKTRACER_CDECL *funcptr_vkreplayer_getframenumber)();
 typedef void(VKTRACER_CDECL *funcptr_vkreplayer_onterminate)();
+typedef void(VKTRACER_CDECL *funcptr_vkreplayer_setinframerange)(bool inrange);
 }
 
 struct vktrace_trace_packet_replay_library {
@@ -86,6 +88,7 @@ struct vktrace_trace_packet_replay_library {
     funcptr_vkreplayer_getframenumber GetFrameNumber;
     funcptr_vkreplayer_resetframenumber ResetFrameNumber;
     funcptr_vkreplayer_onterminate OnTerminate;
+    funcptr_vkreplayer_setinframerange SetInFrameRange;
 };
 
 class ReplayFactory {

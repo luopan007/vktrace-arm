@@ -40,6 +40,8 @@ else()
     message(FATAL_ERROR "Unsupported Platform!")
 endif()
 
+add_definitions(-DVK_ENABLE_BETA_EXTENSIONS)
+
 add_custom_target( generate_api_cpp DEPENDS api_dump.cpp )
 add_custom_target( generate_api_h DEPENDS api_dump_text.h )
 add_custom_target( generate_api_html_h DEPENDS api_dump_html.h )
@@ -54,6 +56,7 @@ if (NOT APPLE)
         VkLayer_screenshot
         VkLayer_device_simulation
         VkLayer_api_cost
+        VkLayer_emptydriver
         )
     set(VK_LAYER_RPATH /usr/lib/x86_64-linux-gnu/vulkan/layer:/usr/lib/i386-linux-gnu/vulkan/layer)
     set(CMAKE_INSTALL_RPATH ${VK_LAYER_RPATH})
@@ -121,6 +124,7 @@ run_vulkantools_vk_xml_generate(api_dump_generator.py api_dump_text.h)
 run_vulkantools_vk_xml_generate(api_dump_generator.py api_dump_html.h)
 run_vulkantools_vk_xml_generate(api_dump_generator.py api_dump_json.h)
 run_vulkantools_vk_xml_generate(api_cost_generator.py api_cost.cpp)
+run_vulkantools_vk_xml_generate(emptydriver_generator.py vktrace_emptydriver.cpp)
 
 if (NOT APPLE)
     add_vk_layer(monitor monitor.cpp vk_layer_table.cpp)
@@ -130,6 +134,7 @@ endif ()
 
 add_vk_layer(api_dump api_dump.cpp vk_layer_table.cpp)
 add_vk_layer(api_cost api_cost.cpp vk_layer_table.cpp)
+add_vk_layer(emptydriver vktrace_emptydriver.cpp vk_layer_table.cpp)
 
 # json file creation
 

@@ -17,3 +17,4 @@
 #pragma once
 
 void dump_packet(const vktrace_trace_packet_header* packet);
+void reset_dump_file_name(const char* dump_file_name);

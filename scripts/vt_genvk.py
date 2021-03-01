@@ -554,6 +554,61 @@ def makeGenOpts(args):
             alignFuncParam    = 48,
             expandEnumerants = False)
         ]
+
+    # systrace file generator options for vktrace_systrace.cpp
+    genOpts['vktrace_systrace.cpp'] = [
+        ApiDumpOutputGenerator,
+        ApiDumpGeneratorOptions(
+            conventions       = conventions,
+            input             = SYSTRACE_CODEGEN,
+            filename          = 'vktrace_systrace.cpp',
+            apiname           = 'vulkan',
+            profile           = None,
+            versions          = featuresPat,
+            emitversions      = featuresPat,
+            defaultExtensions = 'vulkan',
+            addExtensions     = addExtensionsPat,
+            removeExtensions  = removeExtensionsPat,
+            emitExtensions    = emitExtensionsPat,
+            prefixText        = prefixStrings + vkPrefixStrings,
+            genFuncPointers   = True,
+            protectFile       = protect,
+            protectFeature    = False,
+            protectProto      = None,
+            protectProtoStr   = 'VK_NO_PROTOTYPES',
+            apicall           = 'VKAPI_ATTR ',
+            apientry          = 'VKAPI_CALL ',
+            apientryp         = 'VKAPI_PTR *',
+            alignFuncParam    = 48,
+            expandEnumerants = False)
+        ]
+    # emptydriver file generator options for vktrace_systrace.cpp
+    genOpts['vktrace_emptydriver.cpp'] = [
+        ApiDumpOutputGenerator,
+        ApiDumpGeneratorOptions(
+            conventions       = conventions,
+            input             = EMPTYDRIVER_CODEGEN,
+            filename          = 'vktrace_emptydriver.cpp',
+            apiname           = 'vulkan',
+            profile           = None,
+            versions          = featuresPat,
+            emitversions      = featuresPat,
+            defaultExtensions = 'vulkan',
+            addExtensions     = addExtensionsPat,
+            removeExtensions  = removeExtensionsPat,
+            emitExtensions    = emitExtensionsPat,
+            prefixText        = prefixStrings + vkPrefixStrings,
+            genFuncPointers   = True,
+            protectFile       = protect,
+            protectFeature    = False,
+            protectProto      = None,
+            protectProtoStr   = 'VK_NO_PROTOTYPES',
+            apicall           = 'VKAPI_ATTR ',
+            apientry          = 'VKAPI_CALL ',
+            apientryp         = 'VKAPI_PTR *',
+            alignFuncParam    = 48,
+            expandEnumerants = False)
+        ]
 # Generate a target based on the options in the matching genOpts{} object.
 # This is encapsulated in a function so it can be profiled and/or timed.
 # The args parameter is an parsed argument object containing the following
@@ -572,7 +627,6 @@ def genTarget(args):
     if (args.target in genOpts.keys()):
         createGenerator = genOpts[args.target][0]
         options = genOpts[args.target][1]
-
         #if not args.quiet:
            # write('* Building', options.filename, file=sys.stderr)
            # write('* options.versions          =', options.versions, file=sys.stderr)
@@ -582,15 +636,33 @@ def genTarget(args):
            # write('* options.removeExtensions  =', options.removeExtensions, file=sys.stderr)
            # write('* options.emitExtensions    =', options.emitExtensions, file=sys.stderr)
 
-        startTimer(args.time)
         gen = createGenerator(errFile=errWarn,
                               warnFile=errWarn,
                               diagFile=diag)
-        reg.setGenerator(gen)
-        reg.apiGen(options)
+
+        # Load & parse registry
+        reg = Registry(gen, options)
+
+        startTimer(args.time)
+        tree = etree.parse(args.registry)
+        endTimer(args.time, '* Time to make ElementTree =')
+
+        startTimer(args.time)
+        reg.loadElementTree(tree)
+        endTimer(args.time, '* Time to parse ElementTree =')
+
+        if (args.validate):
+            reg.validateGroups()
+
+        if (args.dump):
+            write('* Dumping registry to regdump.txt', file=sys.stderr)
+            reg.dumpReg(filehandle = open('regdump.txt', 'w', encoding='utf-8'))
 
         if not args.quiet:
             write('* Generated', options.filename, file=sys.stderr)
+
+        startTimer(args.time)
+        reg.apiGen()
         endTimer(args.time, '* Time to generate ' + options.filename + ' =')
     else:
         write('No generator options for unknown target:',
@@ -668,28 +740,12 @@ if __name__ == '__main__':
     from layer_factory_generator import LayerFactoryGeneratorOptions, LayerFactoryOutputGenerator
     from vkconventions import VulkanConventions
     from api_cost_generator import ApiCostGeneratorOptions, ApiCostOutputGenerator, APICOST_CODEGEN
+    from systrace_generator import SYSTRACE_CODEGEN
+    from emptydriver_generator import EMPTYDRIVER_CODEGEN
 
     # This splits arguments which are space-separated lists
     args.feature = [name for arg in args.feature for name in arg.split()]
     args.extension = [name for arg in args.extension for name in arg.split()]
-
-    # Load & parse registry
-    reg = Registry()
-
-    startTimer(args.time)
-    tree = etree.parse(args.registry)
-    endTimer(args.time, '* Time to make ElementTree =')
-
-    startTimer(args.time)
-    reg.loadElementTree(tree)
-    endTimer(args.time, '* Time to parse ElementTree =')
-
-    if (args.validate):
-        reg.validateGroups()
-
-    if (args.dump):
-        write('* Dumping registry to regdump.txt', file=sys.stderr)
-        reg.dumpReg(filehandle = open('regdump.txt', 'w', encoding='utf-8'))
 
     # create error/warning & diagnostic files
     if (args.errfile):

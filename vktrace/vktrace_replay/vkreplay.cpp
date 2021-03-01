@@ -32,8 +32,8 @@
 #include "vktrace_vk_packet_id.h"
 #include "vktrace_tracelog.h"
 
-static vkreplayer_settings s_defaultVkReplaySettings = {NULL, 1, UINT_MAX, UINT_MAX, true, false, NULL, NULL, NULL,
-                                                        NULL, "xcb", FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 50, FALSE, FALSE, NULL};
+static vkreplayer_settings s_defaultVkReplaySettings = {NULL, 1, 0, UINT_MAX, true, false, NULL, NULL, NULL,
+                                                        NULL, "xcb", FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 50, FALSE, FALSE, NULL, false};
 
 vkReplay* g_pReplayer = NULL;
 VKTRACE_CRITICAL_SECTION g_handlerLock;
@@ -156,7 +156,13 @@ int VKTRACER_CDECL VkReplayDump() {
 
 int VKTRACER_CDECL VkReplayGetFrameNumber() {
     if (g_pReplayer != NULL) {
-        return g_pReplayer->get_frame_number();
+        int frames = g_pReplayer->get_frame_number();
+        if (frames == 0) {
+            frames = g_ruiFrames;
+        } else {
+            g_ruiFrames = 0;
+        }
+        return frames;
     }
     return -1;
 }
@@ -170,6 +176,12 @@ void VKTRACER_CDECL VkReplayResetFrameNumber(int frameNumber) {
 void VKTRACER_CDECL VkReplayOnTerminate() {
     if (g_pReplayer != NULL) {
         g_pReplayer->on_terminate();
+    }
+}
+
+void VKTRACER_CDECL VkReplaySetInFrameRange(bool inrange) {
+    if (g_pReplayer != NULL) {
+        g_pReplayer->set_in_frame_range(inrange);
     }
 }
 

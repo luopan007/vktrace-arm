@@ -129,7 +129,6 @@ approved_ext = [
                 'VK_NV_viewport_array2',
                 'VK_NV_viewport_swizzle',
                 'VK_NV_win32_keyed_mutex',
-                'VK_NVX_device_generated_commands',
                 'VK_NVX_multiview_per_view_attributes',
                 'VK_EXT_sample_locations',
                 'VK_KHR_sampler_ycbcr_conversion',
@@ -137,6 +136,7 @@ approved_ext = [
                 'VK_KHR_memory2',
                 'VK_KHR_protected_memory',
                 'VK_KHX_subgroup',
+                'VK_KHR_create_renderpass2',
                 ]
 
 api_exclusions = [
@@ -187,9 +187,19 @@ class VkTraceFileOutputGeneratorOptions(GeneratorOptions):
                  expandEnumerants = True,
                  library_name = '',
                  vktrace_file_type = ''):
-        GeneratorOptions.__init__(self, conventions, filename, directory, apiname, profile,
-                                  versions, emitversions, defaultExtensions,
-                                  addExtensions, removeExtensions, emitExtensions, sortProcedure)
+        GeneratorOptions.__init__(self,
+                                  conventions = conventions,
+                                  filename = filename,
+                                  directory = directory,
+                                  apiname = apiname,
+                                  profile = profile,
+                                  versions = versions,
+                                  emitversions = emitversions,
+                                  defaultExtensions = defaultExtensions,
+                                  addExtensions = addExtensions,
+                                  removeExtensions = removeExtensions,
+                                  emitExtensions=emitExtensions,
+                                  sortProcedure = sortProcedure)
         self.prefixText       = prefixText
         self.genFuncPointers  = genFuncPointers
         self.protectFile      = protectFile
@@ -494,6 +504,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '#include <list>\n'
         replay_objmapper_header += '#include <vector>\n'
         replay_objmapper_header += '#include <string>\n'
+        replay_objmapper_header += '#include <mutex>\n\n'
         replay_objmapper_header += '#include "vulkan/vulkan.h"\n'
         replay_objmapper_header += '#include "vktrace_pageguard_memorycopy.h"\n'
         replay_objmapper_header += '\n'
@@ -584,7 +595,8 @@ class VkTraceFileOutputGenerator(OutputGenerator):
             replay_objmapper_header += '    void (vkReplayObjMapper::*add_to_%s_map_ptr)(%s pTraceVal, %s pReplayVal);\n' % (map_name, item, item)
             replay_objmapper_header += '    void (vkReplayObjMapper::*rm_from_%s_map_ptr)(const %s& key);\n' % (map_name, item)
             replay_objmapper_header += '    %s (vkReplayObjMapper::*remap_%s_ptr)(const %s& value);\n' % (item, map_name, item)
-            replay_objmapper_header += '    std::list<%s> m_actual_%s;\n\n' % (item, map_name)
+            replay_objmapper_header += '    std::list<%s> m_actual_%s;\n' % (item, map_name)
+            replay_objmapper_header += '    std::mutex m_mutex_%s;\n\n' % (map_name)
 
             replay_objmapper_header += '    void add_to_%s_map_origin(%s pTraceVal, %s pReplayVal) {\n' % (map_name, item, item)
             replay_objmapper_header += '        m_%s[pTraceVal] = pReplayVal;\n' % (map_name)
@@ -602,6 +614,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
             replay_objmapper_header += '    }\n\n'
 
             replay_objmapper_header += '    void add_to_%s_map_premapped(%s pTraceVal, %s pReplayVal) {\n' % (map_name, item, item)
+            replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_%s);\n\n' % (map_name)
             replay_objmapper_header += '        auto it = m_indirect_%s.find(pTraceVal);\n' % (map_name)
             replay_objmapper_header += '        if (it == m_indirect_%s.end()) {\n' % (map_name)
             replay_objmapper_header += '            m_actual_%s.push_back(pReplayVal);\n' % (map_name)
@@ -615,6 +628,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
             replay_objmapper_header += '    }\n\n'
 
             replay_objmapper_header += '    void rm_from_%s_map_premapped(const %s& key) {\n' % (map_name, item)
+            replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_%s);\n\n' % (map_name)
             replay_objmapper_header += '        auto it = m_indirect_%s.find(key);\n' % (map_name)
             replay_objmapper_header += '        if (it != m_indirect_%s.end()) {\n' % (map_name)
             replay_objmapper_header += '            *it->second = VK_NULL_HANDLE;\n'
@@ -623,6 +637,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
 
             replay_objmapper_header += '    %s remap_%s_premapped(const %s& value) {\n' % (item, map_name, item)
             replay_objmapper_header += '        if (value == 0) { return 0; }\n'
+            replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_%s);\n\n' % (map_name)
             replay_objmapper_header += '        std::unordered_map<%s, %s*>::const_iterator q = m_indirect_%s.find(value);\n' % (item, item, map_name)
             replay_objmapper_header += '        if (q == m_indirect_%s.end()) { vktrace_LogError("Failed to remap %s."); return VK_NULL_HANDLE; }\n' % (map_name, item)
             replay_objmapper_header += '        return *(q->second);\n'
@@ -644,6 +659,17 @@ class VkTraceFileOutputGenerator(OutputGenerator):
             replay_objmapper_header += '        return (this->*remap_%s_ptr)(value);\n' % (map_name)
             replay_objmapper_header += '    }\n\n'
 
+            replay_objmapper_header += '    %s* add_null_to_%s_map(%s pTraceVal) {\n' % (item, map_name, item)
+            replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_%s);\n\n' % (map_name)
+            replay_objmapper_header += '        auto it = m_indirect_%s.find(pTraceVal);\n' % (map_name)
+            replay_objmapper_header += '        if (it == m_indirect_%s.end()) {\n' % (map_name)
+            replay_objmapper_header += '            m_actual_%s.push_back(VK_NULL_HANDLE);\n' % (map_name)
+            replay_objmapper_header += '            m_indirect_%s[pTraceVal] = &(m_actual_%s.back());\n' % (map_name, map_name)
+            replay_objmapper_header += '            it = m_indirect_%s.find(pTraceVal);\n' % (map_name)
+            replay_objmapper_header += '        }\n'
+            replay_objmapper_header += '        return it->second;\n'
+            replay_objmapper_header += '    }\n\n'
+
         ##########################################################################
 
         replay_objmapper_header += 'private:\n'
@@ -654,6 +680,8 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '    const bufferObj &(vkReplayObjMapper::*find_buffer_ptr)(const VkBuffer &deviceMem);\n'
         replay_objmapper_header += '    std::list<bufferObj> m_actual_buffers;\n'
         replay_objmapper_header += '    bufferObj dummyBufferObj;\n'
+        replay_objmapper_header += '    std::mutex m_mutex_buffers;\n\n'
+        replay_objmapper_header += '    std::unordered_map<VkBuffer, bufferObj*> m_indirect_buffers;\n'
 
         replay_objmapper_header += '    void add_to_buffers_map_origin(VkBuffer pTraceVal, bufferObj pReplayVal) {\n'
         replay_objmapper_header += '        m_buffers[pTraceVal] = pReplayVal;\n'
@@ -685,6 +713,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '    }\n'
 
         replay_objmapper_header += '    void add_to_buffers_map_premapped(VkBuffer pTraceVal, bufferObj pReplayVal) {\n'
+        replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_buffers);\n\n'
         replay_objmapper_header += '        auto it = m_indirect_buffers.find(pTraceVal);\n'
         replay_objmapper_header += '        if (it == m_indirect_buffers.end()) {\n'
         replay_objmapper_header += '            m_actual_buffers.push_back(pReplayVal);\n'
@@ -697,6 +726,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '    }\n'
 
         replay_objmapper_header += '    void rm_from_buffers_map_premapped(const VkBuffer& key) {\n'
+        replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_buffers);\n\n'
         replay_objmapper_header += '        auto it = m_indirect_buffers.find(key);\n'
         replay_objmapper_header += '        if (it != m_indirect_buffers.end()) {\n'
         replay_objmapper_header += '            it->second->replayBuffer = VK_NULL_HANDLE;\n'
@@ -705,6 +735,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
 
         replay_objmapper_header += '    VkBuffer remap_buffers_premapped(const VkBuffer& value) {\n'
         replay_objmapper_header += '        if (value == 0) { return 0; }\n'
+        replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_buffers);\n\n'
         replay_objmapper_header += '        std::unordered_map<VkBuffer, bufferObj*>::const_iterator q = m_indirect_buffers.find(value);\n'
         replay_objmapper_header += '        if (q == m_indirect_buffers.end()) { vktrace_LogError("Failed to remap VkBuffer."); return VK_NULL_HANDLE; }\n'
         replay_objmapper_header += '        if (q->second == 0) return 0;\n'
@@ -712,6 +743,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '    }\n'
 
         replay_objmapper_header += '    bool buffer_exists_premapped(const VkBuffer &value) {\n'
+        replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_buffers);\n\n'
         replay_objmapper_header += '        auto it = m_indirect_buffers.find(value);\n'
         replay_objmapper_header += '        if (it == m_indirect_buffers.end()) {\n'
         replay_objmapper_header += '            return false;\n'
@@ -723,6 +755,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '    }\n'
 
         replay_objmapper_header += '    const bufferObj &find_buffer_premapped(const VkBuffer &deviceMem) {\n'
+        replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_buffers);\n\n'
         replay_objmapper_header += '        auto it = m_indirect_buffers.find(deviceMem);\n'
         replay_objmapper_header += '        if (it == m_indirect_buffers.end()) {\n'
         replay_objmapper_header += '            return dummyBufferObj;\n'
@@ -733,8 +766,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '    }\n'
 
         replay_objmapper_header += 'public:\n'
-        replay_objmapper_header += '    std::unordered_map<VkBuffer, bufferObj*> m_indirect_buffers;\n'
-        replay_objmapper_header += '    std::unordered_map<VkBuffer, bufferObj>  m_buffers;\n'
+        replay_objmapper_header += '    std::unordered_map<VkBuffer, bufferObj>  m_buffers;\n\n'
         replay_objmapper_header += '    std::unordered_map<VkBuffer, bufferObj*>::iterator find_buffer_iterator(const VkBuffer &deviceMem) {\n'
         replay_objmapper_header += '        auto it = m_indirect_buffers.find(deviceMem);\n'
         replay_objmapper_header += '        if (it == m_indirect_buffers.end()) {\n'
@@ -746,22 +778,33 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '        else {\n'
         replay_objmapper_header += '            return it;\n'
         replay_objmapper_header += '        }\n'
-        replay_objmapper_header += '    }\n'
+        replay_objmapper_header += '    }\n\n'
         replay_objmapper_header += '    bool buffer_exists(const VkBuffer &deviceMem) {\n'
         replay_objmapper_header += '        return (this->*buffer_exists_ptr)(deviceMem);\n'
-        replay_objmapper_header += '    }\n'
+        replay_objmapper_header += '    }\n\n'
         replay_objmapper_header += '    void add_to_buffers_map(VkBuffer pTraceVal, bufferObj pReplayVal) {\n'
         replay_objmapper_header += '        (this->*add_to_buffers_map_ptr)(pTraceVal, pReplayVal);\n'
-        replay_objmapper_header += '    }\n'
+        replay_objmapper_header += '    }\n\n'
         replay_objmapper_header += '    void rm_from_buffers_map(const VkBuffer& key) {\n'
         replay_objmapper_header += '        (this->*rm_from_buffers_map_ptr)(key);\n'
-        replay_objmapper_header += '    }\n'
+        replay_objmapper_header += '    }\n\n'
         replay_objmapper_header += '    VkBuffer remap_buffers(const VkBuffer& value) {\n'
         replay_objmapper_header += '        return (this->*remap_buffers_ptr)(value);\n'
-        replay_objmapper_header += '    }\n'
+        replay_objmapper_header += '    }\n\n'
         replay_objmapper_header += '    const bufferObj &find_buffer(const VkBuffer &deviceMem) {\n'
         replay_objmapper_header += '        return (this->*find_buffer_ptr)(deviceMem);\n'
-        replay_objmapper_header += '    }\n'
+        replay_objmapper_header += '    }\n\n'
+        replay_objmapper_header += '    bufferObj *add_null_to_buffers_map(VkBuffer pTraceVal) {\n'
+        replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_buffers);\n\n'
+        replay_objmapper_header += '        auto it = m_indirect_buffers.find(pTraceVal);\n'
+        replay_objmapper_header += '        if (it == m_indirect_buffers.end()) {\n'
+        replay_objmapper_header += '            bufferObj dummyBufObj;\n'
+        replay_objmapper_header += '            m_actual_buffers.push_back(dummyBufObj);\n'
+        replay_objmapper_header += '            m_indirect_buffers[pTraceVal] = &(m_actual_buffers.back());\n'
+        replay_objmapper_header += '            it = m_indirect_buffers.find(pTraceVal);\n'
+        replay_objmapper_header += '        }\n'
+        replay_objmapper_header += '        return it->second;\n'
+        replay_objmapper_header += '    }\n\n'
 
         ##########################################################################
 
@@ -773,6 +816,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '    const devicememoryObj &(vkReplayObjMapper::*find_devicememory_ptr)(const VkDeviceMemory &deviceMem);\n'
         replay_objmapper_header += '    std::list<devicememoryObj> m_actual_devicememorys;\n'
         replay_objmapper_header += '    devicememoryObj dummyDeviceMemoryObj;\n'
+        replay_objmapper_header += '    std::mutex m_mutex_devicememorys;\n\n'
 
         replay_objmapper_header += '    void add_to_devicememorys_map_origin(VkDeviceMemory pTraceVal, devicememoryObj pReplayVal) {\n'
         replay_objmapper_header += '        m_devicememorys[pTraceVal] = pReplayVal;\n'
@@ -804,6 +848,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '    }\n'
 
         replay_objmapper_header += '    void add_to_devicememorys_map_premapped(VkDeviceMemory pTraceVal, devicememoryObj pReplayVal) {\n'
+        replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_devicememorys);\n\n'
         replay_objmapper_header += '        auto it = m_indirect_devicememorys.find(pTraceVal);\n'
         replay_objmapper_header += '        if (it == m_indirect_devicememorys.end()) {\n'
         replay_objmapper_header += '            m_actual_devicememorys.push_back(pReplayVal);\n'
@@ -816,6 +861,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '    }\n'
 
         replay_objmapper_header += '    void rm_from_devicememorys_map_premapped(const VkDeviceMemory& key) {\n'
+        replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_devicememorys);\n\n'
         replay_objmapper_header += '        auto it = m_indirect_devicememorys.find(key);\n'
         replay_objmapper_header += '        if (it != m_indirect_devicememorys.end()) {\n'
         replay_objmapper_header += '            it->second->pGpuMem = NULL;\n'
@@ -825,6 +871,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
 
         replay_objmapper_header += '    VkDeviceMemory remap_devicememorys_premapped(const VkDeviceMemory& value) {\n'
         replay_objmapper_header += '        if (value == 0) { return 0; }\n'
+        replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_devicememorys);\n\n'
         replay_objmapper_header += '        std::unordered_map<VkDeviceMemory, devicememoryObj*>::const_iterator q = m_indirect_devicememorys.find(value);\n'
         replay_objmapper_header += '        if (q == m_indirect_devicememorys.end()) { vktrace_LogError("Failed to remap VkDeviceMemory."); return VK_NULL_HANDLE; }\n'
         replay_objmapper_header += '        if (q->second == 0) return 0;\n'
@@ -832,6 +879,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '    }\n'
 
         replay_objmapper_header += '    bool devicememory_exists_premapped(const VkDeviceMemory &value) {\n'
+        replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_devicememorys);\n\n'
         replay_objmapper_header += '        auto it = m_indirect_devicememorys.find(value);\n'
         replay_objmapper_header += '        if (it == m_indirect_devicememorys.end()) {\n'
         replay_objmapper_header += '            return false;\n'
@@ -843,6 +891,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '    }\n'
 
         replay_objmapper_header += '    const devicememoryObj &find_devicememory_premapped(const VkDeviceMemory &deviceMem) {\n'
+        replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_devicememorys);\n\n'
         replay_objmapper_header += '        auto it = m_indirect_devicememorys.find(deviceMem);\n'
         replay_objmapper_header += '        if (it == m_indirect_devicememorys.end()) {\n'
         replay_objmapper_header += '            return dummyDeviceMemoryObj;\n'
@@ -866,22 +915,38 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         replay_objmapper_header += '        else {\n'
         replay_objmapper_header += '            return it;\n'
         replay_objmapper_header += '        }\n'
-        replay_objmapper_header += '    }\n'
+        replay_objmapper_header += '    }\n\n'
+
         replay_objmapper_header += '    bool devicememory_exists(const VkDeviceMemory &deviceMem) {\n'
         replay_objmapper_header += '        return (this->*devicememory_exists_ptr)(deviceMem);\n'
-        replay_objmapper_header += '    }\n'
+        replay_objmapper_header += '    }\n\n'
+
         replay_objmapper_header += '    void add_to_devicememorys_map(VkDeviceMemory pTraceVal, devicememoryObj pReplayVal) {\n'
         replay_objmapper_header += '        (this->*add_to_devicememorys_map_ptr)(pTraceVal, pReplayVal);\n'
-        replay_objmapper_header += '    }\n'
+        replay_objmapper_header += '    }\n\n'
+
         replay_objmapper_header += '    void rm_from_devicememorys_map(const VkDeviceMemory& key) {\n'
         replay_objmapper_header += '        (this->*rm_from_devicememorys_map_ptr)(key);\n'
-        replay_objmapper_header += '    }\n'
+        replay_objmapper_header += '    }\n\n'
+
         replay_objmapper_header += '    VkDeviceMemory remap_devicememorys(const VkDeviceMemory& value) {\n'
         replay_objmapper_header += '        return (this->*remap_devicememorys_ptr)(value);\n'
-        replay_objmapper_header += '    }\n'
+        replay_objmapper_header += '    }\n\n'
+
         replay_objmapper_header += '    const devicememoryObj &find_devicememory(const VkDeviceMemory &deviceMem) {\n'
         replay_objmapper_header += '        return (this->*find_devicememory_ptr)(deviceMem);\n'
-        replay_objmapper_header += '    }\n'
+        replay_objmapper_header += '    }\n\n'
+
+        replay_objmapper_header += '    devicememoryObj *add_null_to_devicememorys_map(VkDeviceMemory pTraceVal) {\n'
+        replay_objmapper_header += '        std::lock_guard<std::mutex> lock(m_mutex_devicememorys);\n\n'
+        replay_objmapper_header += '        auto it = m_indirect_devicememorys.find(pTraceVal);\n'
+        replay_objmapper_header += '        if (it == m_indirect_devicememorys.end()) {\n'
+        replay_objmapper_header += '            m_actual_devicememorys.push_back(devicememoryObj(NULL, VK_NULL_HANDLE, pTraceVal));\n'
+        replay_objmapper_header += '            m_indirect_devicememorys[pTraceVal] = &(m_actual_devicememorys.back());\n'
+        replay_objmapper_header += '            it = m_indirect_devicememorys.find(pTraceVal);\n'
+        replay_objmapper_header += '        }\n'
+        replay_objmapper_header += '        return it->second;\n'
+        replay_objmapper_header += '    }\n\n'
 
         ##########################################################################
 
@@ -928,11 +993,13 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                                  'CreatePipelineLayout',
                                  'CreateRenderPass',
                                  'CreateRenderPass2',
+                                 'CreateRenderPass2KHR',
                                  'CmdBeginRenderPass',
                                  'CmdBindDescriptorSets',
                                  'CmdBindVertexBuffers',
                                  'CmdPipelineBarrier',
                                  'QueuePresentKHR',
+                                 'AcquireNextImageKHR',
                                  'CmdWaitEvents',
                                  'DestroyBuffer',
                                  'DestroyImage',
@@ -993,17 +1060,15 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                                  # VK_EXT_display_control
                                  'RegisterDeviceEventEXT',
                                  'RegisterDisplayEventEXT',
-                                 # VK_NVX_device_generated_commands
-                                 'CreateObjectTableNVX',
-                                 'CmdProcessCommandsNVX',
-                                 'CreateIndirectCommandsLayoutNVX',
                                  'BindBufferMemory2KHR',
                                  'BindImageMemory2KHR',
                                  'BindBufferMemory2',
                                  'BindImageMemory2',
                                  'GetDisplayPlaneSupportedDisplaysKHR',
                                  'EnumerateDeviceExtensionProperties',
-                                 'CreateSampler'
+                                 'CreateSampler',
+                                 'CmdBeginRenderPass2',
+                                 'CmdBeginRenderPass2KHR'
                                  ]
         # Map APIs to functions if body is fully custom
         custom_body_dict = {'CreateInstance': self.GenReplayCreateInstance,
@@ -1014,7 +1079,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         # Special cases for functions that use do-while loops
         do_while_dict = {'GetFenceStatus': 'replayResult != pPacket->result && pPacket->result == VK_SUCCESS',
                          'GetEventStatus': '(pPacket->result == VK_EVENT_SET || pPacket->result == VK_EVENT_RESET) && replayResult != pPacket->result',
-                         'GetQueryPoolResults': 'pPacket->result == VK_SUCCESS && replayResult != pPacket->result'}
+                         'GetQueryPoolResults': 'pPacket->result == VK_SUCCESS && (pPacket->flags & VK_QUERY_RESULT_WAIT_BIT || queryType == VK_QUERY_TYPE_OCCLUSION) && replayResult != pPacket->result'}
 
         replay_gen_source  = '\n'
         replay_gen_source += '#include "vkreplay_vkreplay.h"\n'
@@ -1124,9 +1189,10 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                         replay_gen_source += '            }\n'
                     else:
                         replay_gen_source += '            VkImage pktImg = pPacket->pCreateInfo->image;\n'
-                        replay_gen_source += '            if (curSwapchainImgState.traceImageToImageIndex.find(pktImg) != curSwapchainImgState.traceImageToImageIndex.end()) {\n'
-                        replay_gen_source += '                if (curSwapchainImgState.traceImageToImageIndex[pktImg] == m_pktImgIndex) {\n'
-                        replay_gen_source += '                    pktImg = curSwapchainImgState.traceImageIndexToImage[m_imageIndex];\n'
+                        replay_gen_source += '            SwapchainImageState& curSwapchainImgStat = swapchainImageStates[curSwapchainHandle];\n'
+                        replay_gen_source += '            if (curSwapchainImgStat.traceImageToImageIndex.find(pktImg) != curSwapchainImgStat.traceImageToImageIndex.end()) {\n'
+                        replay_gen_source += '                if (curSwapchainImgStat.traceImageToImageIndex[pktImg] == m_pktImgIndex) {\n'
+                        replay_gen_source += '                    pktImg = curSwapchainImgStat.traceImageIndexToImage[m_imageIndex];\n'
                         replay_gen_source += '                }\n'
                         replay_gen_source += '            }\n'
                         replay_gen_source += '            createInfo.image = m_objMapper.remap_images(pktImg);\n'
@@ -1180,6 +1246,13 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                         last_name = p.name
 
                 if cmdname in do_while_dict:
+                    if cmdname == 'GetFenceStatus':
+                        replay_gen_source += '            uint32_t call_id = m_inFrameRange ? VKTRACE_TPI_VK_vkGetFenceStatus : 0;\n'
+                    elif cmdname == 'GetEventStatus':
+                        replay_gen_source += '            uint32_t call_id = m_inFrameRange ? VKTRACE_TPI_VK_vkGetEventStatus : 0;\n'
+                    elif cmdname == 'GetQueryPoolResults':
+                        replay_gen_source += '            uint32_t call_id = m_inFrameRange ? VKTRACE_TPI_VK_vkGetQueryPoolResults : 0;\n'
+                        replay_gen_source += '            VkQueryType queryType = m_querypool_type[pPacket->queryPool];\n'
                     replay_gen_source += '            do {\n'
 
                 if cmdname == 'DestroyInstance':
@@ -1245,9 +1318,6 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                     replay_gen_source += '            vkreplay_process_pnext_structs(pPacket->header, (void *)pPacket->pYcbcrConversion);\n'
                 elif 'GetPhysicalDeviceFormatProperties2' in cmdname:
                     replay_gen_source += '            vkreplay_process_pnext_structs(pPacket->header, (void *)pPacket->pFormatProperties);\n'
-                elif 'GetPhysicalDeviceImageFormatProperties2' in cmdname:
-                    replay_gen_source += '            vkreplay_process_pnext_structs(pPacket->header, (void *)pPacket->pImageFormatInfo);\n'
-                    replay_gen_source += '            vkreplay_process_pnext_structs(pPacket->header, (void *)pPacket->pImageFormatProperties);\n'
                 elif 'GetPhysicalDeviceQueueFamilyProperties2' in cmdname:
                     replay_gen_source += '            for (uint32_t i=0; i<*pPacket->pQueueFamilyPropertyCount; i++)\n'
                     replay_gen_source += '                vkreplay_process_pnext_structs(pPacket->header, (void *)(&pPacket->pQueueFamilyProperties[i]));\n'
@@ -1264,6 +1334,15 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                     replay_gen_source += '                surfRefCount--;\n'
                     replay_gen_source += '                return vktrace_replay::VKTRACE_REPLAY_SUCCESS;\n'
                     replay_gen_source += '            }\n'
+                elif 'CreateSemaphore' in cmdname:
+                    replay_gen_source += '            // This code is only used to get the frame number of AndroidR UI Trace.\n'
+                    replay_gen_source += '            extern vkReplay* g_pReplayer; \n'
+                    replay_gen_source += '            if (pPacket->pCreateInfo->pNext && g_pReplayer->get_frame_number() == 0) {\n'
+                    replay_gen_source += '                VkExportSemaphoreCreateInfo* pInfo = (VkExportSemaphoreCreateInfo*)pPacket->pCreateInfo->pNext;\n'
+                    replay_gen_source += '                if (pInfo->sType == VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO && pInfo->pNext == nullptr && pInfo->handleTypes == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT) {\n'
+                    replay_gen_source += '                    g_ruiFrames++;\n'
+                    replay_gen_source += '                }\n'
+                    replay_gen_source += '            }\n'
                 elif 'CreatePipelineCache' in cmdname:
                     replay_gen_source += '            if (g_pReplaySettings->enablePipelineCache) {\n'
                     replay_gen_source += '                assert(nullptr != m_pipelinecache_accessor);\n'
@@ -1272,7 +1351,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                     replay_gen_source += '                if (full_path.empty()) {\n'
                     replay_gen_source += '                    m_pipelinecache_accessor->CollectPacketInfo(pPacket->device, cache_handle);\n'
                     replay_gen_source += '                } else {\n'
-                    replay_gen_source += '                    if (!g_pReplaySettings->preloadTraceFile && m_pipelinecache_accessor->LoadPipelineCache(full_path)) {\n'
+                    replay_gen_source += '                    if (!(g_pReplaySettings->preloadTraceFile && vktrace_replay::timerStarted()) && m_pipelinecache_accessor->LoadPipelineCache(full_path)) {\n'
                     replay_gen_source += '                        // We only load pipeline cache data here if the preLoadTraceFile flag is not true,\n'
                     replay_gen_source += '                        auto cache_data = m_pipelinecache_accessor->GetPipelineCache(cache_handle);\n'
                     replay_gen_source += '                        if (nullptr != cache_data.first) {\n'
@@ -1303,6 +1382,35 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                     replay_gen_source += '                }\n'
                     replay_gen_source += '                m_pipelinecache_accessor->RemoveCollectedPacketInfo(pPacket->device, pPacket->pipelineCache);\n'
                     replay_gen_source += '            }\n'
+                elif 'GetPhysicalDeviceImageFormatProperties2' in cmdname:
+                    replay_gen_source += '            #if !defined(ANDROID)\n'
+                    replay_gen_source += '            if (pPacket->pImageFormatInfo != nullptr) {\n'
+                    replay_gen_source += '                VkPhysicalDeviceExternalImageFormatInfo* pPhysicalDeviceExternalImageFormatInfo = (VkPhysicalDeviceExternalImageFormatInfo*)find_ext_struct(\n'
+                    replay_gen_source += '                    (const vulkan_struct_header*)pPacket->pImageFormatInfo, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);\n'
+                    replay_gen_source += '                if (pPhysicalDeviceExternalImageFormatInfo != nullptr && (pPhysicalDeviceExternalImageFormatInfo->handleType & VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID)) {\n'
+                    replay_gen_source += '                    uint32_t handleType = pPhysicalDeviceExternalImageFormatInfo->handleType & (~VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID);\n'
+                    replay_gen_source += '                    if (handleType == 0) {\n'
+                    replay_gen_source += '                        vulkan_struct_header** ppNext = (vulkan_struct_header**)&(pPacket->pImageFormatInfo->pNext);\n'
+                    replay_gen_source += '                        while (*ppNext != nullptr) {\n'
+                    replay_gen_source += '                            if ((void*)*ppNext == (void*)pPhysicalDeviceExternalImageFormatInfo) {\n'
+                    replay_gen_source += '                                *ppNext = (vulkan_struct_header*)pPhysicalDeviceExternalImageFormatInfo->pNext;\n'
+                    replay_gen_source += '                                break;\n'
+                    replay_gen_source += '                            }\n'
+                    replay_gen_source += '                            ppNext = (vulkan_struct_header**)&(*ppNext)->pNext;\n'
+                    replay_gen_source += '                        }\n'
+                    replay_gen_source += '                    } else {\n'
+                    replay_gen_source += '                        pPhysicalDeviceExternalImageFormatInfo->handleType = (VkExternalMemoryHandleTypeFlagBits)handleType;\n'
+                    replay_gen_source += '                    }\n'
+                    replay_gen_source += '                }\n'
+                    replay_gen_source += '            }\n'
+                    replay_gen_source += '            #endif\n'
+                elif cmdname == 'GetSemaphoreFdKHR':
+                    replay_gen_source += '            VkSemaphore semaphore = m_objMapper.remap_semaphores(pPacket->pGetFdInfo->semaphore);\n'
+                    replay_gen_source += '            if (pPacket->pGetFdInfo->semaphore != VK_NULL_HANDLE && semaphore == VK_NULL_HANDLE) {\n'
+                    replay_gen_source += '                vktrace_LogError("Error detected in GetSemaphoreFdKHR() due to invalid remapped VkSemaphore.");\n'
+                    replay_gen_source += '                return vktrace_replay::VKTRACE_REPLAY_ERROR;\n'
+                    replay_gen_source += '            }\n'
+                    replay_gen_source += '            const_cast<VkSemaphoreGetFdInfoKHR*>(pPacket->pGetFdInfo)->semaphore = semaphore;\n'
                 # Build the call to the "real_" entrypoint
                 if cmdname == 'GetRefreshCycleDurationGOOGLE' or cmdname == 'GetPastPresentationTimingGOOGLE':
                     replay_gen_source += '            if (m_vkDeviceFuncs.%s) {\n' % cmdname
@@ -1359,14 +1467,16 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                 if cmdname == 'GetRefreshCycleDurationGOOGLE' or cmdname == 'GetPastPresentationTimingGOOGLE':
                     replay_gen_source += '            }\n'
                 if cmdname == 'DestroyFramebuffer':
-                    replay_gen_source += '            if (curSwapchainImgState.traceFramebufferToImageIndex.find(pPacket->framebuffer) != curSwapchainImgState.traceFramebufferToImageIndex.end()) {\n'
-                    replay_gen_source += '                curSwapchainImgState.traceImageIndexToFramebuffer.erase(curSwapchainImgState.traceFramebufferToImageIndex[pPacket->framebuffer]);\n'
-                    replay_gen_source += '                curSwapchainImgState.traceFramebufferToImageIndex.erase(pPacket->framebuffer);\n'
+                    replay_gen_source += '            SwapchainImageState& curSwapchainImgStat = swapchainImageStates[curSwapchainHandle];\n'
+                    replay_gen_source += '            if (curSwapchainImgStat.traceFramebufferToImageIndex.find(pPacket->framebuffer) != curSwapchainImgStat.traceFramebufferToImageIndex.end()) {\n'
+                    replay_gen_source += '                curSwapchainImgStat.traceImageIndexToFramebuffer.erase(curSwapchainImgStat.traceFramebufferToImageIndex[pPacket->framebuffer]);\n'
+                    replay_gen_source += '                curSwapchainImgStat.traceFramebufferToImageIndex.erase(pPacket->framebuffer);\n'
                     replay_gen_source += '            }\n'
                 elif cmdname == 'DestroyImageView':
-                    replay_gen_source += '            if (curSwapchainImgState.traceImageViewToImageIndex.find(pPacket->imageView) != curSwapchainImgState.traceImageViewToImageIndex.end()) {\n'
-                    replay_gen_source += '                curSwapchainImgState.traceImageIndexToImageView.erase(curSwapchainImgState.traceImageViewToImageIndex[pPacket->imageView]);\n'
-                    replay_gen_source += '                curSwapchainImgState.traceImageViewToImageIndex.erase(pPacket->imageView);\n'
+                    replay_gen_source += '            SwapchainImageState& curSwapchainImgStat = swapchainImageStates[curSwapchainHandle];\n'
+                    replay_gen_source += '            if (curSwapchainImgStat.traceImageViewToImageIndex.find(pPacket->imageView) != curSwapchainImgStat.traceImageViewToImageIndex.end()) {\n'
+                    replay_gen_source += '                curSwapchainImgStat.traceImageIndexToImageViews[curSwapchainImgStat.traceImageViewToImageIndex[pPacket->imageView]].erase(pPacket->imageView);\n'
+                    replay_gen_source += '                curSwapchainImgStat.traceImageViewToImageIndex.erase(pPacket->imageView);\n'
                     replay_gen_source += '            }\n'
                 # Print the enumerated instance extensions and layers
                 if cmdname == 'EnumerateInstanceExtensionProperties':
@@ -1382,7 +1492,8 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                 # Handle return values or anything that needs to happen after the real_*(..) call
                 if 'Destroy' in cmdname:
                     clean_type = params[-2].type.strip('*').replace('const ', '')
-                    replay_gen_source += '            m_objMapper.rm_from_%ss_map(pPacket->%s);\n' % (clean_type.lower()[2:], params[-2].name)
+                    if 'allocationcallbacks' not in clean_type.lower():
+                        replay_gen_source += '            m_objMapper.rm_from_%ss_map(pPacket->%s);\n' % (clean_type.lower()[2:], params[-2].name)
                 if 'DestroyDevice' in cmdname:
                     replay_gen_source += '            m_pCBDump = NULL;\n'
                     replay_gen_source += '            m_pDSDump = NULL;\n'
@@ -1403,7 +1514,9 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                 elif 'DestroyInstance' in cmdname:
                     replay_gen_source += '            // TODO need to handle multiple instances and only clearing maps within an instance.\n'
                     replay_gen_source += '            // TODO this only works with a single instance used at any given time.\n'
-                    replay_gen_source += '            m_objMapper.clear_all_map_handles();\n'
+                    replay_gen_source += '            m_instCount--;\n'
+                    replay_gen_source += '            if (!m_instCount)\n'
+                    replay_gen_source += '                m_objMapper.clear_all_map_handles();\n'
                     replay_gen_source += '            m_display->m_initedVK = false;\n'
                 elif 'MergePipelineCaches' in cmdname:
                     replay_gen_source += '            delete[] remappedpSrcCaches;\n'
@@ -1427,6 +1540,8 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                     replay_gen_source += '            if (memcmp(&memProperties, pPacket->pMemoryProperties, sizeof(VkPhysicalDeviceMemoryProperties)) != 0) {\n'
                     replay_gen_source += '                vktrace_LogError("Physical Device Memory properties differ. Memory heaps may not match as expected.");\n'
                     replay_gen_source += '            }\n'
+                elif 'DestroyQueryPool' in cmdname:
+                    replay_gen_source += '            m_querypool_type.erase(pPacket->queryPool);\n'
                 elif create_func: # Save handle mapping if create successful
                     if ret_value:
                         replay_gen_source += '            if (replayResult == VK_SUCCESS) {\n'
@@ -1443,14 +1558,20 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                     if 'AllocateMemory' == cmdname:
                         replay_gen_source += '                m_objMapper.add_entry_to_mapData(local_%s, pPacket->pAllocateInfo->allocationSize);\n' % (params[-1].name)
                     elif 'CreateImageView' == cmdname:
-                        replay_gen_source += '                if (curSwapchainImgState.traceImageToImageIndex.find(pktImg) != curSwapchainImgState.traceImageToImageIndex.end()) {\n'
-                        replay_gen_source += '                    curSwapchainImgState.traceImageIndexToImageView[curSwapchainImgState.traceImageToImageIndex[pktImg]] = *(pPacket->pView);\n'
-                        replay_gen_source += '                    curSwapchainImgState.traceImageViewToImageIndex[*(pPacket->pView)] = curSwapchainImgState.traceImageToImageIndex[pktImg];\n'
+                        replay_gen_source += '                SwapchainImageState& curSwapchainImgStat = swapchainImageStates[curSwapchainHandle];\n'
+                        replay_gen_source += '                if (curSwapchainImgStat.traceImageToImageIndex.find(pktImg) != curSwapchainImgStat.traceImageToImageIndex.end()) {\n'
+                        replay_gen_source += '                    curSwapchainImgStat.traceImageIndexToImageViews[curSwapchainImgStat.traceImageToImageIndex[pktImg]].insert(*(pPacket->pView));\n'
+                        replay_gen_source += '                    curSwapchainImgStat.traceImageViewToImageIndex[*(pPacket->pView)] = curSwapchainImgStat.traceImageToImageIndex[pktImg];\n'
                         replay_gen_source += '                }\n'
+                    elif 'CreateQueryPool' in cmdname:
+                        replay_gen_source += '                m_querypool_type[*(pPacket->pQueryPool)] = pPacket->pCreateInfo->queryType;\n'
                     if ret_value:
                         replay_gen_source += '            }\n'
                 elif cmdname in do_while_dict:
+                    replay_gen_source += '                m_CallStats[call_id].total++;\n'
+                    replay_gen_source += '                m_CallStats[call_id].injectedCallCount++;\n'
                     replay_gen_source += '            } while (%s);\n' % do_while_dict[cmdname]
+                    replay_gen_source += '            m_CallStats[call_id].injectedCallCount--;\n'
                     replay_gen_source += '            if (pPacket->result != VK_NOT_READY || replayResult != VK_SUCCESS)\n'
             if ret_value:
                 replay_gen_source += '            CHECK_RETURN_VALUE(vk%s);\n' % cmdname
@@ -2876,7 +2997,14 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         dump_gen_source += '#include "api_dump_text.h"\n'
         dump_gen_source += '#include "api_dump_html.h"\n'
         dump_gen_source += '#include "api_dump_json.h"\n'
-        dump_gen_source += '#include "vktracedump_main.h"'
+        dump_gen_source += '#include "vktracedump_main.h"\n'
+        dump_gen_source += '\n'
+        dump_gen_source += 'void reset_dump_file_name(const char* dump_file_name) { \n'
+        dump_gen_source += '    if (dump_file_name) {\n'
+        dump_gen_source += '        ApiDumpInstance& dump_inst = ApiDumpInstance::current();\n'
+        dump_gen_source += '        dump_inst.resetDumpFileName(dump_file_name);\n'
+        dump_gen_source += '    }\n'
+        dump_gen_source += '}\n'
         dump_gen_source += '\n'
         dump_gen_source += 'void dump_packet(const vktrace_trace_packet_header* packet) {\n'
         dump_gen_source += '    switch (packet->packet_id) {\n'
@@ -3134,6 +3262,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         trace_vk_src += '#endif\n'
         trace_vk_src += '\n'
         trace_vk_src += 'extern VKTRACE_CRITICAL_SECTION g_memInfoLock;\n'
+        trace_vk_src += 'extern std::unordered_map<VkCommandBuffer, std::list<VkBuffer>> g_cmdBufferToBuffers;\n'
         trace_vk_src += '\n'
         trace_vk_src += '#ifdef WIN32\n'
         trace_vk_src += 'BOOL CALLBACK InitTracer(_Inout_ PINIT_ONCE initOnce, _Inout_opt_ PVOID param, _Out_opt_ PVOID *lpContext) {\n'
@@ -3190,6 +3319,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                                          'vkCreatePipelineCache',
                                          'vkCreateRenderPass',
                                          'vkCreateRenderPass2',
+                                         'vkCreateRenderPass2KHR',
                                          'vkGetPipelineCacheData',
                                          'vkCreateGraphicsPipelines',
                                          'vkCreateComputePipelines',
@@ -3252,10 +3382,9 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                                          'vkCmdPushDescriptorSetWithTemplateKHR',
                                          'vkAcquireXlibDisplayEXT',
                                          'vkGetRandROutputDisplayEXT',
-                                         'vkCreateObjectTableNVX',
-                                         'vkCmdProcessCommandsNVX',
-                                         'vkCreateIndirectCommandsLayoutNVX',
                                          'vkGetFenceStatus',
+                                         'vkCmdBeginRenderPass2',
+                                         'vkCmdBeginRenderPass2KHR',
                                          # TODO: VK_EXT_display_control
                                          ]
 
@@ -3343,6 +3472,9 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                     trace_vk_src += '    pageguardExit();\n'
                     trace_vk_src += '#endif\n'
                 if proto.name == 'vkGetPhysicalDeviceSurfaceFormats2KHR':
+                    trace_vk_src += '    if (pSurfaceFormats == nullptr && pSurfaceFormatCount != nullptr) {\n'
+                    trace_vk_src += '       *pSurfaceFormatCount = 0;\n'
+                    trace_vk_src += '    }\n'
                     trace_vk_src += '    size_t byteCount=0;\n'
                     trace_vk_src += '    uint32_t surfaceFormatCount = *pSurfaceFormatCount;\n'
                     trace_vk_src += '    for (uint32_t i=0; i<surfaceFormatCount; i++) {\n'
@@ -3397,6 +3529,12 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                     trace_vk_src += '        replayCreateInfo.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;\n'
                     trace_vk_src += '        pCreateInfo = &replayCreateInfo;\n'
                     trace_vk_src += '    }\n'
+                elif proto.name == 'vkCmdCopyBuffer':
+                    trace_vk_src += '#if defined(USE_PAGEGUARD_SPEEDUP) && !defined(PAGEGUARD_ADD_PAGEGUARD_ON_REAL_MAPPED_MEMORY)\n'
+                    trace_vk_src += '    if (!UseMappedExternalHostMemoryExtension()) {\n'
+                    trace_vk_src += '        g_cmdBufferToBuffers[commandBuffer].push_back(dstBuffer);\n'
+                    trace_vk_src += '    }\n'
+                    trace_vk_src += '#endif\n'
                 if in_data_size:
                     trace_vk_src += '    _dataSize = (pDataSize == NULL || pData == NULL) ? 0 : *pDataSize;\n'
                 trace_vk_src += '    pPacket = interpret_body_as_%s(pHeader);\n' % proto.name
@@ -3417,6 +3555,8 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                             trace_vk_src += '    vktrace_add_pnext_structs_to_trace_packet(pHeader, (void *)pPacket->pCreateInfo, (void *)pCreateInfo);\n'
                         if '(pPacket->pBeginInfo)' in pp_dict['add_txt']:
                             trace_vk_src += '    vktrace_add_pnext_structs_to_trace_packet(pHeader, (void *)pPacket->pBeginInfo, (void *)pBeginInfo);\n'
+                        if '(pPacket->pGetFdInfo)' in pp_dict['add_txt']:
+                            trace_vk_src += '    vktrace_add_pnext_structs_to_trace_packet(pHeader, (void*)pPacket->pGetFdInfo, pGetFdInfo);\n'
                         if '(pPacket->pAllocateInfo)' in pp_dict['add_txt']:
                             trace_vk_src += '    vktrace_add_pnext_structs_to_trace_packet(pHeader, (void *)pPacket->pAllocateInfo, (void *)pAllocateInfo);\n'
                         if '(pPacket->pReserveSpaceInfo)' in pp_dict['add_txt']:
@@ -3604,11 +3744,17 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                             ]
         create_rp2_interp = ['VkRenderPassCreateInfo2* pInfo = (VkRenderPassCreateInfo2*)pPacket->pCreateInfo;\n',
                             'uint32_t i = 0;\n',
-                            'VkAttachmentDescription2 **ppAD = (VkAttachmentDescription2 **)&(pInfo->pAttachments);\n',
-                            '*ppAD = (VkAttachmentDescription2*) vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pInfo->pAttachments);\n',
-                            'VkSubpassDescription2** ppSP = (VkSubpassDescription2**)&(pInfo->pSubpasses);\n',
-                            '*ppSP = (VkSubpassDescription2*) vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pInfo->pSubpasses);\n',
+                            'pInfo->pAttachments = (VkAttachmentDescription2*) vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pInfo->pAttachments);\n',
+                            'for (i=0; i<pInfo->attachmentCount; i++) {\n',
+                            '    vkreplay_process_pnext_structs(pHeader, (void *)&pInfo->pAttachments[i]);\n',
+                            '}\n',
+                            'pInfo->pDependencies = (VkSubpassDependency2*) vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pInfo->pDependencies);\n',
+                            'for (i=0; i<pInfo->dependencyCount; i++) {\n',
+                            '    vkreplay_process_pnext_structs(pHeader, (void *)&pInfo->pDependencies[i]);\n',
+                            '}\n',
+                            'pInfo->pSubpasses = (VkSubpassDescription2*) vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pInfo->pSubpasses);\n',
                             'for (i=0; i<pInfo->subpassCount; i++) {\n',
+                            '    vkreplay_process_pnext_structs(pHeader, (void *)&pInfo->pSubpasses[i]);\n',
                             '    VkAttachmentReference2** pAR = (VkAttachmentReference2**)&(pInfo->pSubpasses[i].pInputAttachments);\n',
                             '    *pAR = (VkAttachmentReference2*)vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pInfo->pSubpasses[i].pInputAttachments);\n',
                             '    pAR = (VkAttachmentReference2**)&(pInfo->pSubpasses[i].pColorAttachments);\n',
@@ -3620,8 +3766,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                             '    pAR = (VkAttachmentReference2**)&(pInfo->pSubpasses[i].pPreserveAttachments);\n',
                             '    *pAR = (VkAttachmentReference2*)vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pInfo->pSubpasses[i].pPreserveAttachments);\n',
                             '}\n',
-                            'VkSubpassDependency2** ppSD2 = (VkSubpassDependency2**)&(pInfo->pDependencies);\n',
-                            '*ppSD2 = (VkSubpassDependency2*) vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pInfo->pDependencies);\n',
+                            'vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pInfo->pCorrelatedViewMasks);\n'
                             ]
         create_gfx_pipe = ['uint32_t i;\n',
                            'uint32_t j;\n',
@@ -3677,6 +3822,7 @@ class VkTraceFileOutputGenerator(OutputGenerator):
         # TODO : This code is now too large and complex, need to make codegen smarter for pointers embedded in struct params to handle those cases automatically
         custom_case_dict = { 'CreateRenderPass' : {'param': 'pCreateInfo', 'txt': create_rp_interp},
                              'CreateRenderPass2' : {'param': 'pCreateInfo', 'txt': create_rp2_interp},
+                             'CreateRenderPass2KHR' : {'param': 'pCreateInfo', 'txt': create_rp2_interp},
                              'CreateDescriptorUpdateTemplate' : {'param': 'pCreateInfo', 'txt': ['*((VkDescriptorUpdateTemplateCreateInfo **)&pPacket->pCreateInfo->pDescriptorUpdateEntries) = (VkDescriptorUpdateTemplateCreateInfo*) vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pPacket->pCreateInfo->pDescriptorUpdateEntries);']},
                              'CreateDescriptorUpdateTemplateKHR' : {'param': 'pCreateInfo', 'txt': ['*((VkDescriptorUpdateTemplateCreateInfoKHR **)&pPacket->pCreateInfo->pDescriptorUpdateEntries) = (VkDescriptorUpdateTemplateCreateInfoKHR*) vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pPacket->pCreateInfo->pDescriptorUpdateEntries);']},
                              'CreatePipelineCache' : {'param': 'pCreateInfo', 'txt': [
@@ -3780,6 +3926,10 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                              'CreateFramebuffer' : {'param': 'pCreateInfo', 'txt': ['VkImageView** ppAV = (VkImageView**)&(pPacket->pCreateInfo->pAttachments);\n',
                                                                                     '*ppAV = (VkImageView*)vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)(pPacket->pCreateInfo->pAttachments));']},
                              'CmdBeginRenderPass' : {'param': 'pRenderPassBegin', 'txt': ['VkClearValue** ppCV = (VkClearValue**)&(pPacket->pRenderPassBegin->pClearValues);\n',
+                                                                                          '*ppCV = (VkClearValue*)vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)(pPacket->pRenderPassBegin->pClearValues));']},
+                             'CmdBeginRenderPass2' : {'param': 'pRenderPassBegin', 'txt': ['VkClearValue** ppCV = (VkClearValue**)&(pPacket->pRenderPassBegin->pClearValues);\n',
+                                                                                          '*ppCV = (VkClearValue*)vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)(pPacket->pRenderPassBegin->pClearValues));']},
+                             'CmdBeginRenderPass2KHR' : {'param': 'pRenderPassBegin', 'txt': ['VkClearValue** ppCV = (VkClearValue**)&(pPacket->pRenderPassBegin->pClearValues);\n',
                                                                                           '*ppCV = (VkClearValue*)vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)(pPacket->pRenderPassBegin->pClearValues));']},
                              'CreateShaderModule' : {'param': 'pCreateInfo', 'txt': ['void** ppCode = (void**)&(pPacket->pCreateInfo->pCode);\n',
                                                                                      '*ppCode = (void*)vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pPacket->pCreateInfo->pCode);']},
@@ -4329,6 +4479,10 @@ class VkTraceFileOutputGenerator(OutputGenerator):
                     trace_pkt_hdr += '        for (i = 0; i < pPacket->memoryRangeCount; i++) {\n'
                     trace_pkt_hdr += '            pPacket->ppData[i] = (void*)vktrace_trace_packet_interpret_buffer_pointer(pHeader, (intptr_t)pPacket->ppData[i]);\n'
                     trace_pkt_hdr += '        }\n'
+                    trace_pkt_hdr += '    }\n'
+                if "vkCreateDevice" == proto.name:
+                    trace_pkt_hdr += '    for (uint32_t i = 0; pPacket->pCreateInfo != nullptr && i < pPacket->pCreateInfo->queueCreateInfoCount; i++) {\n'
+                    trace_pkt_hdr += '        vkreplay_process_pnext_structs(pPacket->header, (void *)&pPacket->pCreateInfo->pQueueCreateInfos[i]);\n'
                     trace_pkt_hdr += '    }\n'
                 trace_pkt_hdr += '    return pPacket;\n'
                 trace_pkt_hdr += '}\n'
